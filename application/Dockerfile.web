@@ -1,0 +1,18 @@
+# Build
+FROM node:20-bookworm-slim AS build
+WORKDIR /app
+COPY ui/package*.json ./
+RUN npm ci --no-audit --no-fund
+COPY ui ./
+# ensure standalone output is enabled in ui/next.config.(m)js
+RUN npm run build
+
+# Run (standalone)
+FROM node:20-bookworm-slim
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/public ./public
+COPY --from=build /app/.next/static ./.next/static
+EXPOSE 3000
+CMD ["node","server.js"]

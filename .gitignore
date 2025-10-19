@@ -1,0 +1,60 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Python/Django
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+.venv/
+venv/
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+*.sqlite3
+
+# Local env & secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.json
+
+# Django storage / temp
+application/media/
+application/reid_processing/
+application/reid/data/
+application/staticfiles/
+reid_processing/
+
+# Model / index artifacts (use Releases or LFS)
+**/release/
+**/*.ann
+**/*.onnx
+**/*.pt
+**/*.pth
+**/*.ckpt
+**/*.h5
+**/*.tflite
+**/*.engine
+**/*.npz
+**/*.npy
+
+# Next.js / Node
+**/node_modules/
+**/.next/
+**/dist/
+.npm/
+.yarn/
+.pnpm-store/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp

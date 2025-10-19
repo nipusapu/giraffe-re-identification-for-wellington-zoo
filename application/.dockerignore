@@ -1,0 +1,14 @@
+.vscode
+.venv
+.git
+__pycache__/
+*.pyc
+media/
+pg_data/
+node_modules/
+ui/node_modules
+ui/.next
+ui/.turbo
+ui/.vercel
+ui/.vscode
+ui/.env.local

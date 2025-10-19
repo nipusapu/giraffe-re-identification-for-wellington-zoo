@@ -1,0 +1,98 @@
+services:
+  postgres:
+    image: postgres:16
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file:
+      - .env
+    # If manage.py is inside "config/", change "manage.py" to "config/manage.py"
+    command: ["sh","-c","python manage.py migrate && gunicorn config.wsgi:application -b 0.0.0.0:8000 --workers 3 --timeout 120"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./media:/app/media
+      - ./detection_model:/app/detection_model:ro
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file:
+      - .env
+    command: ["celery","-A","config","worker","-l","INFO"]
+    depends_on:
+      - api
+      - redis
+    volumes:
+       - ./media:/app/media
+       - ./detection_model:/app/detection_model:ro
+
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file:
+      - .env
+    command: ["celery","-A","config","beat","-l","INFO"]
+    depends_on:
+      - api
+      - redis
+    volumes:
+      - ./media:/app/media
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    env_file:
+      - .env
+    depends_on:
+      - api
+    ports:
+      - "80:3000"
+    # Dev hot-reload (optional):
+    # volumes:
+    #   - ./ui:/app
+    # command: ["sh","-c","npm ci && npm run dev"]
+
+  # proxy:
+  #   image: caddy:2
+  #   # If port 80 is busy on Windows, change to "8080:80"
+  #   ports:
+  #     - "80:80"
+  #   depends_on:
+  #     - web
+  #     - api
+  #   volumes:
+  #     - ./Caddyfile.txt:/etc/caddy/Caddyfile:ro
+  #     - ./media:/srv/app/media:ro
+
+volumes:
+  pg_data:
