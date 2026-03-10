@@ -6,7 +6,7 @@ from api.models import ReIDResult, ImageTag
 @receiver(post_save, sender=ReIDResult)
 def create_tag_on_completion(sender, instance: ReIDResult, created, **kwargs):
     if instance.status == "completed" and instance.predicted_animal_id and instance.image_id:
-        # try to carry confidence from your pipeline output, if present
+        # try to carry confidence from pipeline output, if present
         confidence = None
         if instance.votes_json and isinstance(instance.votes_json, dict):
             confidence = instance.votes_json.get("confidence")

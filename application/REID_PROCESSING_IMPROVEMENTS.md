@@ -64,7 +64,7 @@ REID_CLEANUP_INTERVAL=3600  # Cleanup every hour (seconds)
 
 1. Copy `env.example` to `.env` (if you want to customize settings)
 2. Ensure `AWS_USE_S3=False` (default)
-3. Place your test images in the `media/` directory
+3. Place test images in the `media/` directory
 4. Start the application
 
 ## File Structure
@@ -72,7 +72,7 @@ REID_CLEANUP_INTERVAL=3600  # Cleanup every hour (seconds)
 ```
 application/
 ├── media/                    # Local file storage (when S3 disabled)
-│   └── your-images.jpg
+│   └── images.jpg
 ├── reid_processing/         # Temporary processing directory
 │   ├── temp_*.jpg          # Downloaded/cropped images
 │   └── ...

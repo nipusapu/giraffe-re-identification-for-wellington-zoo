@@ -1,8 +1,9 @@
 // app/api/upload/route.ts
 export const runtime = "nodejs";
 
-function withSlash(base: string, path: string) {
-  return base.replace(/\/+$/, '') + (path.startsWith('/') ? path : `/${path}`);
+function withSlash(base: string | undefined, path: string) {
+  if (!base) throw new Error("Missing API base URL (check env vars)");
+  return base.replace(/\/+$/, "") + (path.startsWith("/") ? path : `/${path}`);
 }
 
 export async function POST(req: Request) {
@@ -10,7 +11,8 @@ export async function POST(req: Request) {
   const file = form.get("image") as File | null;
   if (!file) return new Response(JSON.stringify({ detail: "No image provided." }), { status: 400 });
 
-  const url = withSlash(process.env.DJANGO_API_BASE!, "/api/upload/"); // <-- NOTE THE SLASH
+  const base = process.env.DJANGO_API_BASE || "http://api:8000";
+  const url = withSlash(base, "/api/upload/");
   const upstream = await fetch(url, {
     method: "POST",
     headers: { "X-API-Key": process.env.REID_API_KEY! },

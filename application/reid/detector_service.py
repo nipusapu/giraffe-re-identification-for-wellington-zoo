@@ -6,7 +6,7 @@ log = logging.getLogger(__name__)
 
 @lru_cache(maxsize=1)
 def get_detector():
-    from .detector import build_model  # your existing builder
+    from .detector import build_model  #existing builder
     ckpt = getattr(settings, "DETECTOR_CHECKPOINT", None)
     if not ckpt:
         raise FileNotFoundError("DETECTOR_CHECKPOINT is not set in settings")

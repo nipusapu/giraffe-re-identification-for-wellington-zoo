@@ -6,32 +6,12 @@ import glob
 import cv2
 import numpy as np
 import torch
-import torch.nn as nn
 import torchvision.transforms.functional as F
 from torchvision.models.detection import (
     fasterrcnn_mobilenet_v3_large_fpn,
     FasterRCNN_MobileNet_V3_Large_FPN_Weights,
 )
-from torchvision.models import MobileNet_V3_Large_Weights
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-
-
-class ConvHead(nn.Module):
-    def __init__(self, in_ch, rep_size=1024):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_ch, in_ch, 3, padding=1)
-        self.conv2 = nn.Conv2d(in_ch, in_ch, 3, padding=1)
-        self.relu = nn.ReLU()
-        self.avg = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(in_ch, rep_size)
-
-    def forward(self, x):
-        x = self.relu(self.conv1(x))
-        x = self.relu(self.conv2(x))
-        x = self.avg(x)
-        x = torch.flatten(x, 1)
-        return self.fc(x)
-
 
 def build_model(checkpoint_path, device="cpu"):
     """
@@ -41,21 +21,19 @@ def build_model(checkpoint_path, device="cpu"):
     device = torch.device(str(device).strip())
 
     # Base model
-    det_wts = FasterRCNN_MobileNet_V3_Large_FPN_Weights.COCO_V1
-    bb_wts = MobileNet_V3_Large_Weights.IMAGENET1K_V1
-    model = fasterrcnn_mobilenet_v3_large_fpn(
-        weights=det_wts,
-        weights_backbone=bb_wts,
-    )
+    weights = FasterRCNN_MobileNet_V3_Large_FPN_Weights.COCO_V1
+    model = fasterrcnn_mobilenet_v3_large_fpn(weights=weights)
 
-    # Compact head (2 classes: bg + flank)
-    in_ch = model.backbone.out_channels  # 256
-    model.roi_heads.box_head = ConvHead(in_ch, rep_size=1024)
-    model.roi_heads.box_predictor = FastRCNNPredictor(1024, num_classes=2)
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, 2)
 
     # Load fine-tuned weights with fallbacks
     state = torch.load(checkpoint_path, map_location="cpu")
-    if isinstance(state, dict) and "state_dict" in state:
+
+    # Handle the save format
+    if isinstance(state, dict) and "model_state" in state:
+        state = state["model_state"]
+    elif isinstance(state, dict) and "state_dict" in state:
         state = state["state_dict"]
 
     if isinstance(state, dict):
@@ -66,7 +44,17 @@ def build_model(checkpoint_path, device="cpu"):
                 cleaned[k] = v
         state = cleaned
 
-    model.load_state_dict(state, strict=False)
+    cleaned = {}
+    for k, v in state.items():
+        if k.startswith("module."):
+            cleaned[k[len("module."):]] = v
+        else:
+            cleaned[k] = v
+
+    missing, unexpected = model.load_state_dict(cleaned, strict=False)
+    print("Missing keys:", len(missing), "Unexpected:", len(unexpected), flush=True)
+    if missing: print("Missing sample:", missing[:10], flush=True)
+    if unexpected: print("Unexpected sample:", unexpected[:10], flush=True)
     model.to(device).eval()
     return model
 
@@ -74,10 +62,10 @@ def build_model(checkpoint_path, device="cpu"):
 def main():
     parser = argparse.ArgumentParser(description="Detect & crop giraffe flanks (no JSON needed)")
     parser.add_argument("--images_dir", required=True, help="Folder with test images")
-    parser.add_argument("--checkpoint", required=True, help="Path to your .pth checkpoint")
+    parser.add_argument("--checkpoint", required=True, help="Path to the .pth checkpoint")
     parser.add_argument("--output_dir", default="crops", help="Where to save color crops")
     parser.add_argument("--score_thresh", type=float, default=0.5, help="Min detection score")
-    parser.add_argument("--grayscale", action="store_true", help="Convert input to gray (×3 channels)")
+    parser.add_argument("--grayscale", action="store_true", help="Convert input to gray (x3 channels)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -105,8 +93,9 @@ def main():
             img = cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2RGB)
 
         img = np.ascontiguousarray(img)
-        tensor = torch.from_numpy(img).permute(2, 0, 1).float().div(255)
-        tensor = F.normalize(tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]).to(device).unsqueeze(0)
+        # tensor = .float().div(255)
+        tensor = torch.from_numpy(img).permute(2,0,1).float() / 255.0
+        tensor = F.normalize(tensor, mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
 
         with torch.no_grad():
             outputs = model(tensor)[0]

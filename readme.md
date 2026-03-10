@@ -1,4 +1,4 @@
-# giraffe-re-identification-for-zoo
+# Giraffe Re-identification for Wellington Zoo
 
 Identifying giraffes by their spot patterns is vital for research, industry, and education, but many tools are expert-oriented and require training. Zoo visitors often have no simple way to identify an individual on site. Each giraffe has unique markings—spot patterns, horn shape, ear notches—that are easy to miss without guidance during a short visit.
 
@@ -14,19 +14,24 @@ The back end is lightweight and runs on a laptop or in the cloud. It’s budget-
 
 ## Table of Contents
 
-- [giraffe-re-identification-for-zoo](#giraffe-re-identification-for-zoo)
+- [Giraffe Re-identification for Wellington Zoo](#giraffe-re-identification-for-wellington-zoo)
   - [Table of Contents](#table-of-contents)
+  - [Data availability](#data-availability)
   - [What’s in this repo](#whats-in-this-repo)
   - [System overview](#system-overview)
   - [Folder guide](#folder-guide)
   - [Quick start](#quick-start)
     - [Run the web app with Docker Compose](#run-the-web-app-with-docker-compose)
     - [Run locally (Python + Node)](#run-locally-python--node)
-    - [C) Try the algorithms from the CLI](#c-try-the-algorithms-from-the-cli)
+    - [Try the algorithms from the CLI](#try-the-algorithms-from-the-cli)
   - [Configuration (.env)](#configuration-env)
   - [Swapping models](#swapping-models)
 
 ---
+
+## Data availability
+
+The dataset used for this paper, including all ground-truth masks is available for download on Zenodo: [https://zenodo.org/records/18930574](https://zenodo.org/records/18930574)
 
 ## What’s in this repo
 
@@ -61,7 +66,7 @@ User Upload -> Django API  -> Celery Pipeline -> Detector (MobileNetV3 FRCNN)
 | Path           | Purpose                            | Key files                                                                                   |
 | -------------- | ---------------------------------- | ------------------------------------------------------------------------------------------- |
 | `application/` | Web application (API + tasks + UI) | `api/`, `reid/`, `config/`, `ui/`, `Dockerfile.api`, `Dockerfile.web`, `docker-compose.yml` |
-| `mobilent/`    | Detector training & evaluation     | `trinscript.py` (train), `testscript.py` (service-style test)                               |
+| `mobilent/`    | Detector training & evaluation     | `trainscript.py` (train), `testscript.py` (service-style test)                               |
 | `sift/`        | SIFT/RootSIFT Re-ID                | `build_sift_index.py` (build Annoy), `query_sift_reid.py` (evaluate)                        |
 | `svm/`         | Baseline HOG + SVM                 | `trainscript.py` (train), `testscript.py` (detect + AP eval)                                |
 
@@ -75,7 +80,7 @@ User Upload -> Django API  -> Celery Pipeline -> Detector (MobileNetV3 FRCNN)
 
 ```bash
 # 1) Clone and enter
-git clone <your-repo-url> giraffe-re-identification-for-zoo
+git clone <repo-url> giraffe-re-identification-for-zoo
 cd giraffe-re-identification-for-zoo
 
 # 2) Create env file
@@ -84,17 +89,19 @@ cp .env.example .env
 
 # 3) Prepare model/index files (mounted into the API)
 mkdir -p models out
-# put your detector checkpoint and SIFT index/meta here
-# e.g., models/model_epoch50.pth, out/sift_gallery.ann, out/sift_meta.json
+# put the detector checkpoint and SIFT index/meta here
+# e.g., models/fasterrcnn_mbv3_fpn_latest.pth, out/sift_gallery_rootsift_100_unsegmented.ann, out/sift_gallery_rootsift_100_unsegmented.json
 
 # 4) Build and run
 docker compose up --build -d
 
 # 5) Migrate DB and create admin
 docker compose exec api python manage.py migrate
-docker compose exec api python manage.py createsuperuser
 
-# 6) (If Celery isn’t a separate service) start worker in the api container
+# 6) Create secrekey
+python manage.py create_api_key `<replace-keyname>`
+
+# 7) (If Celery isn’t a separate service) start worker in the api container
 docker compose exec -d api celery -A celery worker -l info
 ```
 
@@ -147,7 +154,7 @@ module.exports = {
 };
 ```
 
-### C) Try the algorithms from the CLI
+### Try the algorithms from the CLI
 
 **SIFT Re-ID**
 
@@ -155,25 +162,25 @@ module.exports = {
 # Build gallery index
 python sift/build_sift_index.py \
   --gallery_dir GALLERY \
-  --index_path  out/sift_gallery.ann \
-  --meta_path   out/sift_meta.json \
-  --img_width   256 --max_kpts 150 --num_trees 50 --descriptor rootsift
+  --index_path  out/sift_gallery_rootsift_100_unsegmented.ann \
+  --meta_path   out/sift_gallery_rootsift_100_unsegmented.json \
+  --img_width   256 --max_kpts 150 --num_trees 100 --descriptor rootsift
 
 # Evaluate queries (Top-1/Top-2 + confusion CSVs)
 python sift/query_sift_reid.py eval \
   --test_dir TEST \
-  --index_path out/sift_gallery.ann \
-  --meta_path  out/sift_meta.json \
+  --index_path out/sift_gallery_rootsift_100_unsegmented.ann \
+  --meta_path  out/sift_gallery_rootsift_100_unsegmented.json \
   --save_confmat out/confusion_counts.csv \
   --descriptor rootsift --img_width 256 --max_kpts 150 \
-  --k_neigh 7 --search_k_mult 20 --per_image_match_cap 30
+  --k_neigh 11 --search_k_mult 20 --per_image_match_cap 30
 ```
 
-**MobileNetV3 detector**
+**MobileNet detector**
 
 ```bash
 # Train
-python mobilent/trinscript.py \
+python mobilent/trainscript.py \
   --images_dir dataset/images \
   --train_json dataset/annotations_train.json \
   --val_json   dataset/annotations_val.json \
@@ -183,7 +190,7 @@ python mobilent/trinscript.py \
 python mobilent/testscript.py \
   --images_dir dataset/images \
   --coco_json  dataset/annotations_eval.json \
-  --checkpoint checkpoints/model_epoch50.pth \
+  --checkpoint checkpoints/fasterrcnn_mbv3_fpn_latest.pth \
   --out_dir    eval_out --score_thresh 0.7 --iou_thresh 0.50 --top1
 ```
 
@@ -231,11 +238,10 @@ Key settings you’ll likely touch:
 ## Swapping models
 
 * **Change detector**
-  Drop the new `.pth` into `models/` (or your mounted folder) and set:
+  Drop the new `.pth` into `models/` (MobileNet) and set:
 
   ```
   DETECTOR_CHECKPOINT=/app/models/model_epochNEW.pth
-  DETECTOR_DEVICE=cpu|cuda
   ```
 
   Restart the API and the Celery worker (Compose: `docker compose restart api`).

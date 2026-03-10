@@ -203,7 +203,7 @@ def _dist_to_weight(dist: float) -> float:
 
 
 def _id_to_code(nei_id: int) -> str:
-    """Map Annoy item id -> your animal code, robust to various meta formats."""
+    """Map Annoy item id -> animal code, robust to various meta formats."""
     meta = _get_meta()
     if meta is None:
         return str(nei_id)
@@ -240,7 +240,7 @@ def _id_to_code(nei_id: int) -> str:
 def reidentify(crop_path: str) -> Tuple[str, Dict[str, float]]:
     """
     Match a crop against the descriptor-level Annoy index.
-    Returns (best_code, votes_dict) where codes are your giraffe IDs from the gallery.
+    Returns (best_code, votes_dict) where codes are giraffe IDs from the gallery.
     - votes_dict keys: codes; values: normalized vote weights (sum to 1).
     """
     idx = _get_index()
@@ -248,7 +248,7 @@ def reidentify(crop_path: str) -> Tuple[str, Dict[str, float]]:
     # ---- config from Django settings (via getattr) ----
     topk_per_desc: int = int(_s("REID_TOPK_PER_DESC", 5))
     # Backward-compat: allow either MAX_KPTS (preferred) or MAX_DESCRIPTORS
-    max_kpts: int = int(_s("REID_MAX_KPTS", _s("REID_MAX_DESCRIPTORS", 150)))
+    max_kpts: int = int(_s("REID_MAX_KPTS", _s("REID_MAX_DESCRIPTORS", 85)))
     img_width: int = int(_s("REID_IMG_WIDTH", 256))
     flip_query: bool = bool(_s("REID_FLIP_QUERY", False))
     masks_root: Optional[str] = _s("REID_MASKS_ROOT", None)

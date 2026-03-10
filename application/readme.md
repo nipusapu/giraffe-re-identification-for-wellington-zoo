@@ -73,21 +73,21 @@ DB_CONN_MAX_AGE=60
 REDIS_URL=redis://localhost:6379/0
 
 # --- Detector ---
-DETECTOR_CHECKPOINT=./models/model_epoch50.pth
+DETECTOR_CHECKPOINT=./models/fasterrcnn_mbv3_fpn_latest.pth
 DETECTOR_DEVICE=cpu
 DETECT_SCORE_THRESH=0.70
 DETECT_GRAYSCALE=1
 DETECT_WARMUP_ITERS=0
 
 # --- ReID (SIFT + Annoy) ---
-REID_INDEX_PATH=./out/sift_gallery.ann
-REID_META_PATH=./out/sift_meta.json
+REID_INDEX_PATH=./out/sift_gallery_rootsift_100_unsegmented.ann
+REID_META_PATH=./out/sift_gallery_rootsift_100_unsegmented.json
 REID_IMG_WIDTH=256
 REID_MAX_KPTS=150
 REID_TOPK_PER_DESC=7
-REID_SEARCH_K_MULT=20
+REID_SEARCH_K_MULT=32
 REID_PER_IMAGE_MATCH_CAP=30
-REID_PER_ID_NORMALIZE=1
+REID_PER_ID_NORMALIZE=0
 REID_IMPLEMENTATION=
 
 # --- Storage ---
@@ -112,21 +112,21 @@ DB_CONN_MAX_AGE=300
 REDIS_URL=redis://redis:6379/0
 
 # --- Detector ---
-DETECTOR_CHECKPOINT=/app/models/model_epoch50.pth
+DETECTOR_CHECKPOINT=/app/models/fasterrcnn_mbv3_fpn_latest.pth
 DETECTOR_DEVICE=cuda
 DETECT_SCORE_THRESH=0.70
 DETECT_GRAYSCALE=1
 DETECT_WARMUP_ITERS=2
 
 # --- ReID (SIFT + Annoy) ---
-REID_INDEX_PATH=/app/out/sift_gallery.ann
-REID_META_PATH=/app/out/sift_meta.json
+REID_INDEX_PATH=/app/out/sift_gallery_rootsift_100_unsegmented.ann
+REID_META_PATH=/app/out/sift_gallery_rootsift_100_unsegmented.json
 REID_IMG_WIDTH=256
-REID_MAX_KPTS=150
-REID_TOPK_PER_DESC=7
-REID_SEARCH_K_MULT=20
+REID_MAX_KPTS=85
+REID_TOPK_PER_DESC=11
+REID_SEARCH_K_MULT=32
 REID_PER_IMAGE_MATCH_CAP=30
-REID_PER_ID_NORMALIZE=1
+REID_PER_ID_NORMALIZE=0
 REID_IMPLEMENTATION=reid2
 
 # --- S3 (turn on for production) ---
@@ -170,10 +170,10 @@ AWS_SECRET_ACCESS_KEY=...
 | `REID_USE_CLAHE`                              |         bool | `True`                     | Apply CLAHE in preproc                              |
 | `REID_TOPK_PER_DESC`                          |          int | `7`                        | k-NN per descriptor                                 |
 | `REID_ANNOY_SEARCH_K`                         |     int/None | `None`                     | Annoy `search_k` (if 0, use multiplier)             |
-| `REID_SEARCH_K_MULT`                          |        float | `20.0`                     | `search_k = n_items * MULT` when above is 0         |
+| `REID_SEARCH_K_MULT`                          |        float | `32.0`                     | `search_k = n_items * MULT` when above is 0         |
 | `REID_PER_IMAGE_MATCH_CAP`                    |          int | `30`                       | Cap votes per gallery image                         |
 | `REID_USE_RANK_WEIGHT`                        |         bool | `True`                     | Weight neighbors by `1/rank`                        |
-| `REID_PER_ID_NORMALIZE`                       |         bool | `True`                     | Normalise scores by gallery size per ID             |
+| `REID_PER_ID_NORMALIZE`                       |         bool | `False`                     | Normalise scores by gallery size per ID             |
 | `REID_IMPLEMENTATION`                         |          str | `""`                       | Engine selector (`reid2`, `reid1`, blank=auto)      |
 | `REID_ASSIGN_THRESHOLD`                       |        float | `0.35`                     | Auto-assign threshold for predicted label (if used) |
 | `REID_ALLOW_NUMERIC_PK_MATCH`                 |         bool | `False`                    | Allow numeric pk ID matching (if used)              |
@@ -182,8 +182,8 @@ AWS_SECRET_ACCESS_KEY=...
 
 ### Tips
 
-* When running **with Docker Compose**, prefer container paths such as `/app/models/model.pth` and mount host folders via volumes.
-* For **local dev**, relative paths like `./output/sift_gallery.ann` are resolved from the project root.
+* When running **with Docker Compose**, prefer container paths such as `/app/models/fasterrcnn_mbv3_fpn_latest.pth` and mount host folders via volumes.
+* For **local dev**, relative paths like `./output/sift_gallery_rootsift_100_unsegmented.ann` are resolved from the project root.
 * If you enable S3, make sure the bucket exists and the credentials are valid; otherwise the app falls back to local storage.
 
 ## Quick start (Docker Compose)
@@ -200,11 +200,11 @@ These steps bring up **Postgres + Redis + Django API + Next.js** using the provi
 
    ```bash
    mkdir -p models checkpoints out
-   # put your detector here
-   cp /path/to/model_epoch50.pth models/
-   # put your SIFT index & meta here
-   cp /path/to/sift_gallery.ann out/
-   cp /path/to/sift_meta.json    out/
+   # put the detector here
+   cp /path/to/fasterrcnn_mbv3_fpn_latest.pth models/
+   # put the SIFT index & meta here
+   cp /path/to/sift_gallery_rootsift_100_unsegmented.ann out/
+   cp /path/to/sift_gallery_rootsift_100_unsegmented.json    out/
    ```
 
 **Start the stack:**
@@ -243,9 +243,9 @@ These steps bring up **Postgres + Redis + Django API + Next.js** using the provi
 > Then set in `.env`:
 >
 > ```env
-> DETECTOR_CHECKPOINT=/app/models/model_epoch50.pth
-> REID_INDEX_PATH=/app/out/sift_gallery.ann
-> REID_META_PATH=/app/out/sift_meta.json
+> DETECTOR_CHECKPOINT=/app/models/fasterrcnn_mbv3_fpn_latest.pth
+> REID_INDEX_PATH=/app/out/sift_gallery_rootsift_100_unsegmented.ann
+> REID_META_PATH=/app/out/sift_gallery_rootsift_100_unsegmented.json
 > ```
 
 ## Quick start (Local Dev: Python + Node)
@@ -260,7 +260,7 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
- **Set environment** (from your `.env`)
+ **Set environment** (from `.env`)
 
 ```bash
 # export everything from .env (bash-compatible)
@@ -304,7 +304,7 @@ celery -A celery worker -l info
 ```
 
 **Model files**
-Place your detector and SIFT index where your paths point (e.g., `./checkpoints/model.pth`, `./out/sift_gallery.ann`, `./out/sift_meta.json`).
+Place the detector and SIFT index where the paths point (e.g., `./checkpoints/model.pth`, `./out/sift_gallery_rootsift_100_unsegmented.ann`, `./out/sift_gallery_rootsift_100_unsegmented.json`).
 
 ### Front‑end (Next.js)
 
@@ -378,21 +378,7 @@ When a request is authenticated, `request.user` is an anonymous placeholder and 
 Open a shell:
 
 ```bash
-python manage.py shell
-```
-
-Run this (replace `<yourapp>` with your app/module name that contains `models.py`):
-
-```python
-from <yourapp>.models import ApiKey
-import secrets, hashlib
-
-prefix = secrets.token_hex(6)       # short id you can share/log
-secret = secrets.token_urlsafe(32)  # store this securely client-side
-salt   = secrets.token_hex(16)
-hashed = hashlib.sha256((secret + salt).encode()).hexdigest()
-rec = ApiKey.objects.create(prefix=prefix, salt=salt, hashed_key=hashed, is_active=True)
-print('API KEY (copy now):', f'{prefix}.{secret}')
+python manage.py create_api_key `<replace-keyname>`
 ```
 
 > The **secret is shown only once**. Store it securely (e.g., in a vault or env var). You cannot recover it from the database later.
@@ -431,7 +417,7 @@ curl -H "X-API-Key: <prefix>.<secret>" \
 
 * `REID_INDEX_PATH` / `REID_META_PATH` — built by the SIFT builder.
 * `REID_TOPK_PER_DESC`, `REID_SEARCH_K_MULT`, `REID_PER_IMAGE_MATCH_CAP` — search/voting behavior.
-* `REID_PER_ID_NORMALIZE=1` — balances IDs with many photos.
+* `REID_PER_ID_NORMALIZE=0` — balances IDs with many photos.
 * `REID_IMPLEMENTATION` — `reid2` preferred, `reid1` legacy.
 
 > Keep **build/query** SIFT settings consistent (image width, max kpts, descriptor type).
@@ -444,7 +430,7 @@ curl -H "X-API-Key: <prefix>.<secret>" \
 2. Update `.env`:
 
    ```env
-   DETECTOR_CHECKPOINT=/app/models/model_epochNEW.pth   # Docker path
+   DETECTOR_CHECKPOINT=/app/models/fasterrcnn_mbv3_fpn_latest.pth   # Docker path
    DETECTOR_DEVICE=cuda   # or cpu
    DETECT_SCORE_THRESH=0.70
    ```
@@ -466,13 +452,13 @@ curl -H "X-API-Key: <prefix>.<secret>" \
    ```env
    REID_INDEX_PATH=/app/out/sift_gallery_NEW.ann
    REID_META_PATH=/app/out/sift_meta_NEW.json
-   REID_PER_ID_NORMALIZE=1
+   REID_PER_ID_NORMALIZE=0
    ```
 3. **Restart** the API container and Celery worker.
 
 **Toggle Re‑ID implementation**
 
-* If your code supports both, set:
+* If the code supports both, set:
 
   ```env
   REID_IMPLEMENTATION=reid2   # preferred

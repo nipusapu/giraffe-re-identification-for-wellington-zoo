@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """
 SIFT / RootSIFT Re-identification Evaluator (Annoy-backed)
-— with Top-1/Top-2 metrics, confusion matrices, and per-query CSVs.
+— with Top-1/Top-2 metrics, mAP, mean rank, confusion matrices, and per-query CSVs.
 
 What this script does
 ---------------------
 1) Loads a prebuilt Annoy gallery index (built from SIFT/RootSIFT descriptors)
    and its metadata mapping each descriptor back to (gallery_image, identity).
 2) For each query image:
-   • Preprocess (resize + CLAHE), extract (Root)SIFT descriptors
+   • Crop to bounding box (if --bbox_json provided)
+   • Preprocess (resize + CLAHE on grayscale), extract (Root)SIFT descriptors
    • For each descriptor, retrieve k nearest gallery descriptors (Annoy)
    • Aggregate per-gallery-image votes/scores with caps to avoid domination
    • Aggregate per-identity votes/scores (optional per-ID normalisation)
    • Produce ranked identities (by score and by raw votes)
 3) Computes:
    • Top-1 and Top-2 accuracy over the query set
+   • mAP (mean Average Precision, single relevant item per query)
+   • Mean rank and rank@k metrics
    • Confusion matrix (counts + row-normalised %)
    • Per-query vote breakdowns (by ID and by gallery image)
    • Per-image timing (feature time, total time, descriptors used)
@@ -44,20 +47,30 @@ Quick start
 # Evaluate a full directory
 python query_sift_reid.py eval \
   --test_dir data/test \
-  --index_path out/sift_gallery.ann \
-  --meta_path  out/sift_meta.json \
+  --index_path out/sift_gallery_rootsift_100_unsegmented.ann \
+  --meta_path  out/sift_gallery_rootsift_100_unsegmented.json \
   --save_confmat out/confusion_counts.csv \
-  --descriptor rootsift --img_width 256 --max_kpts 150 \
-  --k_neigh 7 --search_k_mult 20 --per_image_match_cap 30
+  --descriptor rootsift --img_width 256 --max_kpts 85 \
+  --k_neigh 11 --search_k_mult 32 --per_image_match_cap 30
+
+# Evaluate with bounding box cropping
+python query_sift_reid.py eval \
+  --test_dir data/test \
+  --index_path out/sift_gallery_rootsift_100_unsegmented.ann \
+  --meta_path  out/sift_gallery_rootsift_100_unsegmented.json \
+  --save_confmat out/confusion_counts.csv \
+  --bbox_json bbox_annotations.json \
+  --descriptor rootsift --img_width 256 --max_kpts 85 \
+  --k_neigh 11 --search_k_mult 32 --per_image_match_cap 30
 
 # Evaluate a single image
 python query_sift_reid.py eval \
   --query_image data/test/NIA/img1.jpg \
-  --index_path out/sift_gallery.ann \
-  --meta_path  out/sift_meta.json \
+  --index_path out/sift_gallery_rootsift_100_unsegmented.ann \
+  --meta_path  out/sift_gallery_rootsift_100_unsegmented.json \
   --save_confmat out/single_confusion.csv \
-  --descriptor rootsift --img_width 256 --max_kpts 150 \
-  --k_neigh 7 --search_k_mult 20 --per_image_match_cap 30
+  --descriptor rootsift --img_width 256 --max_kpts 85 \
+  --k_neigh 11 --search_k_mult 32 --per_image_match_cap 30
 
 Outputs
 -------
@@ -65,7 +78,7 @@ Outputs
 <base>_confusion_counts_rowpct.csv          # row-normalised % 0..100
 <base>_votes_per_query.csv                  # raw ID votes per query
 <base>_votes_per_query_by_image.csv         # raw gallery-image votes per query
-<base>_per_query_predictions.csv            # GT, winners, and per-ID votes
+<base>_per_query_predictions.csv            # GT, winners, gt_rank, ap_single, and per-ID votes
 <base>_times.csv                            # per-query timing + descriptor count
 
 Requirements
@@ -84,21 +97,34 @@ from annoy import AnnoyIndex
 
 # ------------------- Defaults -------------------
 IMG_WIDTH = 256
-MAX_KPTS  = 150
-K_NEIGH   = 7
-SEARCH_K_MULT = 20
+MAX_KPTS  = 85
+K_NEIGH   = 11
+SEARCH_K_MULT = 32
 PER_IMAGE_MATCH_CAP = 30
-PER_ID_NORMALIZE = True  # apply normalisation to scores (not raw votes)
+PER_ID_NORMALIZE = False  # apply normalisation to scores (not raw votes)
+BBOX_JSON = "../bbox_annotations.json"
+
+
+# ------------------- Bounding box utilities -------------------
+def load_bbox_json(path):
+    """Load bbox annotations JSON."""
+    if path is None or not os.path.exists(path):
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def clamp_box(b, w, h):
+    """Clamp bounding box coordinates to image dimensions."""
+    x1 = max(0, min(int(b["x1"]), w - 1))
+    x2 = max(0, min(int(b["x2"]), w - 1))
+    y1 = max(0, min(int(b["y1"]), h - 1))
+    y2 = max(0, min(int(b["y2"]), h - 1))
+    if x2 <= x1: x2 = min(w - 1, x1 + 1)
+    if y2 <= y1: y2 = min(h - 1, y1 + 1)
+    return x1, y1, x2, y2
 
 
 # ------------------- SIFT / RootSIFT extractors -------------------
-def _create_sift(max_kpts: int = MAX_KPTS):
-    """Create a SIFT extractor (compat with OpenCV contrib variants)."""
-    try:
-        return cv2.SIFT_create(nfeatures=max_kpts)
-    except Exception:
-        return cv2.xfeatures2d.SIFT_create(nfeatures=max_kpts)
-
 def _rootsift(des, eps=1e-12):
     """RootSIFT: L1-normalize rows then sqrt (works well with Euclidean)."""
     if des is None or len(des) == 0:
@@ -113,88 +139,77 @@ def extract_descriptors(img_bgr: np.ndarray, mode: str = "rootsift",
     if img_bgr is None:
         return None, 0
     gray = img_bgr if img_bgr.ndim == 2 else cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    sift = _create_sift(max_kpts=max_kpts)
+    sift = cv2.SIFT_create()
     kps, des = sift.detectAndCompute(gray, None)
     if des is None or len(des) == 0:
         return None, 0
+    
+    # Keep top-K strongest keypoint responses
+    if kps and des is not None and len(kps) > 0:
+        keep_idx = np.argsort([-kp.response for kp in kps])[:max_kpts]
+        des = des[keep_idx]
+        kps = [kps[i] for i in keep_idx]
+    
     if mode.lower() == "rootsift":
         des = _rootsift(des)
     elif mode.lower() == "sift":
         des = des.astype(np.float32)
     else:
         raise ValueError(f"Unsupported descriptor mode: {mode}")
-    if max_kpts and len(des) > max_kpts:
-        des = des[:max_kpts]
     return des, len(kps)
 
 
 # ------------------- Preprocessing -------------------
-def preprocess_image(path: str, width: int = IMG_WIDTH) -> Optional[np.ndarray]:
-    """Read BGR image, resize (preserve aspect), and apply CLAHE (on V channel)."""
+def preprocess_gray(img: np.ndarray, width: int) -> np.ndarray:
+    """
+    Resize to a fixed width (preserve aspect), convert to grayscale,
+    then apply CLAHE (local contrast equalization).
+    """
+    h, w = img.shape[:2]
+    new_w = max(1, int(width))
+    new_h = max(1, int(round(h * (new_w / float(w)))))
+    # INTER_AREA is robust for downscaling
+    img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    if img.ndim == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # CLAHE helps SIFT under shadows/bright spots
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    return clahe.apply(img)
+
+def preprocess_image(path: str, width: int = IMG_WIDTH, bbox_map: dict = None) -> Optional[np.ndarray]:
+    """Read BGR image, crop to bbox (if provided)S, resize (preserve aspect), and apply CLAHE."""
     img = cv2.imread(path, cv2.IMREAD_COLOR)
     if img is None:
         return None
-    h, w = img.shape[:2]
-    if width and w != width:
-        new_w = int(width)
-        new_h = int(round(h * (new_w / float(w))))
-        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    # CLAHE on V to handle harsh lighting
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    hsv[:, :, 2] = clahe.apply(hsv[:, :, 2])
-    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    
+    # Optional bbox cropping
+    if bbox_map:
+        box_path = str(path).replace("\\", "/")
+        boxes = bbox_map.get(box_path)
+        if boxes:
+            box = boxes[0]  # Take first bbox
+            h, w = img.shape[:2]
+            x1, y1, x2, y2 = clamp_box(box, w=w, h=h)
+            img = img[y1:y2, x1:x2].copy()
+    
+    return preprocess_gray(img, width)
 
 
 # ------------------- Meta / index helpers -------------------
-def load_meta(meta_path: str) -> Dict[int, Dict[str, Any]]:
-    """
-    Load meta mapping Annoy item id → {'image': str, 'gid': str}.
-    Supports multiple formats:
-      A) {"items":[{"image":"...","gid":"..."},...], "index":{...}}
-      B) {"0":{"image":"...","gid":"..."}, "1":{...}}
-      C) [{"image":"...","gid":"..."}, ...]
-      D) {"meta":[{"giraffe_id":"...","image_path":"...", ...}], "config": {...}}  (from build_sift_index.py)
-    """
-    with open(meta_path, "r", encoding="utf-8") as f:
+def load_meta(meta_path):
+    with meta_path.open("r", encoding="utf-8") as f:
         meta = json.load(f)
 
+    config = meta["config"]
+    meta = meta["meta"]
+
     mapping = {}
+    for i, it in enumerate(meta):
+        mapping[i] = {"image": it["image_path"], "gid": it["identity"]}
 
-    # D) build_sift_index.py format
-    if isinstance(meta, dict) and "meta" in meta and isinstance(meta["meta"], list):
-        for i, it in enumerate(meta["meta"]):
-            gid = it.get("gid") or it.get("giraffe_id")
-            img = it.get("image") or it.get("image_path")
-            mapping[i] = {"image": str(img), "gid": str(gid)}
-        return mapping
-
-    # A)
-    if isinstance(meta, dict) and "items" in meta:
-        for i, it in enumerate(meta["items"]):
-            mapping[i] = {"image": it["image"], "gid": it["gid"]}
-        return mapping
-
-    # B)
-    if isinstance(meta, dict):
-        for k, it in meta.items():
-            if k == "index":
-                continue
-            try:
-                idx = int(k)
-            except Exception:
-                continue
-            mapping[idx] = {"image": it["image"], "gid": it["gid"]}
-        if mapping:
-            return mapping
-
-    # C)
-    if isinstance(meta, list):
-        for i, it in enumerate(meta):
-            mapping[i] = {"image": it["image"], "gid": it["gid"]}
-        return mapping
-
-    raise ValueError("Unsupported meta JSON structure")
+    return mapping, config
 
 def build_id_image_maps(item_meta: Dict[int, Dict[str, Any]]) -> Tuple[Dict[str, int], List[str], List[str]]:
     """
@@ -214,11 +229,6 @@ def build_id_image_maps(item_meta: Dict[int, Dict[str, Any]]) -> Tuple[Dict[str,
     all_gids = sorted(images_by_id.keys())
     all_gallery_images = sorted(gallery_images)
     return id_image_counts, all_gids, all_gallery_images
-
-def guess_annoy_dim(index_path: str) -> int:
-    """Return descriptor dim; SIFT/RootSIFT are 128-D."""
-    return 128
-
 
 # ------------------- Matching (per query) -------------------
 def match_query(
@@ -326,9 +336,10 @@ def evaluate_paths(
     k_neigh: int,
     search_k_mult: int,
     per_image_match_cap: int,
-    per_id_normalize: bool
-) -> None:
-    """Evaluate a list of query paths and write all CSV outputs."""
+    per_id_normalize: bool,
+    bbox_map: dict = None
+):
+    """Evaluate a list of query paths and write all CSV outputs. Returns (top1, top2, avg_det, avg_tot, mAP, mean_rank)."""
 
     # collectors
     counts: Dict[str, Dict[str, int]] = {gt: {pred: 0 for pred in classes} for gt in classes}
@@ -341,14 +352,19 @@ def evaluate_paths(
     pred_rows:  List[List[Any]] = []
     time_rows:  List[List[Any]] = []
 
+    K = len(classes)
+    rank_positions = []
+    per_query_ap = []
+    rankk_hits = np.zeros(K, dtype=np.int64)  # counts of (rank <= k)
+
     header_ids   = ["query_image", "gt_id"] + classes
     header_byimg = ["query_image", "gt_id"] + gallery_images
-    header_pred  = ["query_image", "gt_id", "pred_score", "pred_votes", "votes_pred"] + classes
+    header_pred  = ["query_image", "gt_id", "pred_score", "pred_votes", "votes_pred", "gt_rank", "ap_single"] + classes
     header_time  = ["query_image", "det_ms", "total_ms", "n_descriptors"]
 
     for i, qpath in enumerate(qpaths, start=1):
         t0 = time.time()
-        img = preprocess_image(qpath, width=img_width)
+        img = preprocess_image(qpath, width=img_width, bbox_map=bbox_map)
         des, _ = extract_descriptors(img, mode=descriptor_mode, max_kpts=max_kpts)
         t1 = time.time()
 
@@ -384,6 +400,18 @@ def evaluate_paths(
         if gt in top2_ids:
             top2_correct += 1
 
+        ranked_ids = [p[0] for p in ranked]
+        try:
+            r = ranked_ids.index(gt) + 1
+        except ValueError:
+            r = K + 1
+        rank_positions.append(r)
+        ap_i = 1.0 / r
+        per_query_ap.append(ap_i)
+        for k in range(1, K + 1):
+            if r <= k:
+                rankk_hits[k - 1] += 1
+
         # per-query votes by ID
         votes_map = {gid: 0 for gid in classes}
         for gid, v in ranked_votes:
@@ -401,7 +429,7 @@ def evaluate_paths(
 
         # per-query predictions summary
         votes_for_pred_votes = votes_map.get(pred_votes, 0) if isinstance(pred_votes, str) else 0
-        pred_rows.append([relname, gt, pred_score, pred_votes, votes_for_pred_votes] + [votes_map[c] for c in classes])
+        pred_rows.append([relname, gt, pred_score, pred_votes, votes_for_pred_votes, r, f"{ap_i:.6f}"] + [votes_map[c] for c in classes])
 
         # timings
         t2 = time.time()
@@ -420,7 +448,7 @@ def evaluate_paths(
         w = csv.writer(f); w.writerow(classes_hdr)
         for gt in classes:
             w.writerow([gt] + [counts.get(gt, {}).get(pred, 0) for pred in classes])
-    print("[EVAL] Saved:", counts_csv)
+    print("Saved:", counts_csv)
 
     # Row-normalised percent
     rowpct, _ = row_normalise_counts(counts, classes)
@@ -429,36 +457,44 @@ def evaluate_paths(
         w = csv.writer(f); w.writerow(classes_hdr)
         for gt, vals in zip(classes, rowpct):
             w.writerow([gt] + [f"{v:.3f}" for v in vals])
-    print("[EVAL] Saved:", rowpct_csv)
+    print("Saved:", rowpct_csv)
 
     # Per-query votes (by ID)
     votes_csv = os.path.splitext(counts_csv)[0] + "_votes_per_query.csv"
     with open(votes_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f); w.writerow(header_ids); w.writerows(votes_rows)
-    print("[EVAL] Saved:", votes_csv)
+    print("Saved:", votes_csv)
 
     # Per-query votes (by gallery image)
     byimg_csv = os.path.splitext(counts_csv)[0] + "_votes_per_query_by_image.csv"
     with open(byimg_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f); w.writerow(header_byimg); w.writerows(byimg_rows)
-    print("[EVAL] Saved:", byimg_csv)
+    print("Saved:", byimg_csv)
 
     # Per-query predictions (winners + per-ID votes)
     pred_csv = os.path.splitext(counts_csv)[0] + "_per_query_predictions.csv"
     with open(pred_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f); w.writerow(header_pred); w.writerows(pred_rows)
-    print("[EVAL] Saved:", pred_csv)
+    print("Saved:", pred_csv)
 
     # Per-query timings
     times_csv = os.path.splitext(counts_csv)[0] + "_times.csv"
     with open(times_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f); w.writerow(header_time); w.writerows(time_rows)
-    print("[EVAL] Saved:", times_csv)
+    print("Saved:", times_csv)
 
     # Summary
     top1 = top1_correct / max(1, total)
     top2 = top2_correct / max(1, total)
-    print(f"[EVAL] Top-1={top1:.4f}  Top-2={top2:.4f}  N={total}")
+    avg_det = sum(float(r[1]) for r in time_rows) / len(time_rows) if len(time_rows) else 0.0
+    avg_tot = sum(float(r[2]) for r in time_rows) / len(time_rows) if len(time_rows) else 0.0
+
+    # NEW: compute mAP (single relevant) and mean rank
+    mAP = float(np.mean(per_query_ap)) if len(per_query_ap) else 0.0
+    mean_rank = float(np.mean(rank_positions)) if len(rank_positions) else float(K + 1)
+
+    print(f"[EVAL] Top-1={top1:.4f}  Top-2={top2:.4f}  mAP={mAP:.4f}  mean-rank={mean_rank:.2f}  N={total}  t_detavg={avg_det:.1f}ms  t_totavg={avg_tot:.1f}ms")
+    return top1, top2, avg_det, avg_tot, mAP, mean_rank
 
 
 # ------------------- CLI -------------------
@@ -499,14 +535,17 @@ def main():
 
     # Scoring / normalisation
     pe.add_argument("--no_per_id_normalize", action="store_true", help="Disable per-ID score normalisation (scores only)")
+    
+    # Bounding box annotations (optional)
+    pe.add_argument("--bbox_json", default="../bbox_annotations.json", help="Optional: JSON file with bounding box annotations for cropping")
 
     args = ap.parse_args()
 
     # Load gallery meta and index
-    item_meta = load_meta(args.meta_path)
+    item_meta, config = load_meta(Path(args.meta_path))
     id_image_counts, all_gids, all_gallery_images = build_id_image_maps(item_meta)
 
-    dim = guess_annoy_dim(args.index_path)
+    dim = 128
     annoy = AnnoyIndex(dim, 'euclidean')
     if not annoy.load(args.index_path):
         print(f"[ERR] Failed to load Annoy index: {args.index_path}")
@@ -538,14 +577,18 @@ def main():
             print(f"[ERR] No images found under: {args.test_dir}")
             sys.exit(2)
 
+    # Load bbox annotations if provided
+    bbox_map = load_bbox_json(args.bbox_json)
+
     # Run evaluation
-    evaluate_paths(
+    top1, top2, avg_det, avg_tot, mAP, mean_rank = evaluate_paths(
         qpaths, annoy, item_meta, id_image_counts, classes, all_gallery_images,
         save_confmat=args.save_confmat, descriptor_mode=args.descriptor,
         img_width=args.img_width, max_kpts=args.max_kpts,
         k_neigh=args.k_neigh, search_k_mult=args.search_k_mult,
         per_image_match_cap=args.per_image_match_cap,
-        per_id_normalize=(not args.no_per_id_normalize)
+        per_id_normalize=(not args.no_per_id_normalize),
+        bbox_map=bbox_map
     )
 
 if __name__ == "__main__":

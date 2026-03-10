@@ -25,21 +25,21 @@ def _score_thresh() -> float:
     return float(getattr(settings, "DETECT_SCORE_THRESH", 0.5))
 
 def _use_grayscale() -> bool:
-    # your CLI run used --grayscale; default True here to match
+    # CLI run used --grayscale; default True here to match
     return bool(getattr(settings, "DETECT_GRAYSCALE", True))
 
 def _warmup_runs() -> int:
     # optional micro-warmup like --warmup (0 disables)
     return int(getattr(settings, "DETECT_WARMUP_ITERS", 0))
 
-# ---------- model bootstrap (reuse your project builder) ----------
+# ---------- model bootstrap  ----------
 @lru_cache(maxsize=1)
 def _get_detector():
     """
-    Build/load the detector once. Reuses your project's builder so the
+    Build/load the detector once. Reuses project's builder so the
     architecture matches the checkpoint exactly.
     """
-    from ..detector import build_model  # <- your existing factory
+    from ..detector import build_model  #existing factory
     ckpt = getattr(settings, "DETECTOR_CHECKPOINT", None)
     if not ckpt:
         raise FileNotFoundError("DETECTOR_CHECKPOINT is not set in settings")
@@ -58,7 +58,7 @@ def _prepare_tensor(local_path: str, grayscale: bool):
     from PIL import Image
     img = Image.open(local_path).convert("RGB")
     if grayscale:
-        # triplicate grayscale into 3 channels to match your CLI
+        # triplicate grayscale into 3 channels to match CLI
         img = img.convert("L")
         img = Image.merge("RGB", (img, img, img))
     t = VF.to_tensor(img)                       # [0,1]

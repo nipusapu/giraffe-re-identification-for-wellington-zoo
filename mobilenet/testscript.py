@@ -6,7 +6,7 @@ MobileNetV3-Large Faster R-CNN Test Runner (service-aligned)
 
 What this script does
 ---------------------
-1) Loads your trained detector checkpoint into a Faster R-CNN
+1) Loads the trained detector checkpoint into a Faster R-CNN
    (MobileNetV3-Large+FPN) model with the custom 1024-d ROI head.
 2) Reads a COCO JSON and robustly resolves each image path under --images_dir.
 3) Runs inference (optionally warm up first), with service-aligned preprocessing:
@@ -31,7 +31,7 @@ Inputs you must provide
 
 Key behaviors / assumptions
 ---------------------------
-• Defaults can mirror your service via env vars:
+• Defaults can mirror service via env vars:
     DETECT_SCORE_THRESH, DETECT_GRAYSCALE, DETECT_WARMUP_ITERS
 • --top1 keeps only the best-scoring box per image (service-like);
   use --all to keep all boxes ≥ score threshold.
@@ -43,7 +43,7 @@ Quick start
 python testscript.py \
   --images_dir data/images \
   --coco_json  data/annotations.json \
-  --checkpoint checkpoints/model_epoch50.pth \
+  --checkpoint checkpoints/fasterrcnn_mbv3_fpn_latest.pth \
   --out_dir    eval_out \
   --score_thresh 0.7 --iou_thresh 0.5 --top1
 
@@ -57,6 +57,7 @@ Outputs
 import os
 import json
 import argparse
+import time
 from typing import List, Tuple, Dict, Optional
 
 import cv2
@@ -64,6 +65,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torchvision.transforms.functional as F
+from pycocotools.cocoeval import COCOeval
 from torchvision.models.detection import (
     fasterrcnn_mobilenet_v3_large_fpn,
     FasterRCNN_MobileNet_V3_Large_FPN_Weights,
@@ -72,7 +74,7 @@ from torchvision.models import MobileNet_V3_Large_Weights
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
 
-# ----------------- ROI head (keeps your 256 -> 1024 head shape) -----------------
+# ----------------- ROI head (keeps 256 -> 1024 head shape) -----------------
 class ConvHead(nn.Module):
     """
     Tiny ROI head: conv3x3 → ReLU → conv3x3 → ReLU → GAP → Linear(->rep_size).
@@ -98,7 +100,7 @@ class ConvHead(nn.Module):
 def build_model(checkpoint_path: str, device: torch.device, num_classes: int = 2, verbose: bool = False):
     """
     Build Faster R-CNN (MobileNetV3-Large+FPN) with the custom 1024-d head,
-    then load your checkpoint (tolerant to common key wrapping patterns).
+    then load the checkpoint (tolerant to common key wrapping patterns).
     """
     det_wts = FasterRCNN_MobileNet_V3_Large_FPN_Weights.COCO_V1
     bb_wts  = MobileNet_V3_Large_Weights.IMAGENET1K_V1
@@ -155,12 +157,15 @@ def load_coco_annotations(
     category_name: Optional[str] = None,
     category_id: Optional[int]   = None,
     verbose: bool = False,
-) -> Tuple[Dict[str, List[Tuple[float, float, float, float]]], Dict[str, str], List[Tuple[str, Optional[str]]]]:
+):
     """
-    Parse a COCO JSON and build:
+        Parse a COCO JSON and build:
       - gt_by_file: abs_path -> list of GT boxes (xyxy)
       - img_to_dataset: abs_path -> dataset name used for that image (if known)
       - img_files: [(abs_path, dataset), ...] for every image entry in JSON
+            - path_to_imgid: abs_path -> COCO image id
+            - resolved_category_id: category id used for filtering/eval
+            - coco: raw COCO dict
 
     Notes:
       • If both category_name and category_id are absent, use all categories.
@@ -181,6 +186,7 @@ def load_coco_annotations(
     gt_by_file: Dict[str, List[Tuple[float, float, float, float]]] = {}
     img_to_dataset: Dict[str, str] = {}
     img_files: List[Tuple[str, Optional[str]]] = []
+    path_to_imgid: Dict[str, int] = {}
 
     # Build image list using robust resolver
     for im in coco.get("images", []):
@@ -189,6 +195,7 @@ def load_coco_annotations(
             continue
         path, used = resolve_img_path(images_root, fn, dset)
         img_files.append((path, used))
+        path_to_imgid[path] = int(im["id"])
 
     # Build GT using resolved paths
     for ann in coco.get("annotations", []):
@@ -215,7 +222,7 @@ def load_coco_annotations(
 
     if verbose:
         print(f"[JSON] images: {len(img_files)}  annotations-linked: {sum(1 for v in gt_by_file.values() if v)}")
-    return gt_by_file, img_to_dataset, img_files
+    return gt_by_file, img_to_dataset, img_files, path_to_imgid, category_id, coco
 
 
 # ----------------- Geometry -----------------
@@ -333,6 +340,35 @@ def compute_voc11_ap(det_records, gt_by_file, processed_paths_set, iou_thr: floa
     }
 
 
+def coco_bbox_eval(coco_gt: dict, coco_results: List[dict], img_ids: Optional[List[int]] = None):
+    """Run COCO bbox evaluation and return evaluator object."""
+    if not coco_results:
+        return None
+
+    # Patch optional fields to avoid pycocotools key errors.
+    anns = coco_gt.get("annotations", [])
+    for ann in anns:
+        ann.setdefault("iscrowd", 0)
+        if "area" not in ann and "bbox" in ann:
+            _, _, w, h = ann["bbox"]
+            ann["area"] = float(w) * float(h)
+
+    from pycocotools.coco import COCO
+
+    coco_api = COCO()
+    coco_api.dataset = coco_gt
+    coco_api.createIndex()
+    coco_dt = coco_api.loadRes(coco_results)
+
+    evaluator = COCOeval(coco_api, coco_dt, iouType="bbox")
+    if img_ids is not None:
+        evaluator.params.imgIds = list(img_ids)
+    evaluator.evaluate()
+    evaluator.accumulate()
+    evaluator.summarize()
+    return evaluator
+
+
 # ----------------- Main -----------------
 def main():
     # Service-aligned defaults via env (can be overridden by CLI)
@@ -367,6 +403,7 @@ def main():
     # Outputs
     ap.add_argument("--metrics_json", type=str, default=None, help="Default: <out_dir>/metrics.json")
     ap.add_argument("--detections_json", type=str, default=None, help="Default: <out_dir>/detections.json")
+    ap.add_argument("--coco_summary_json", type=str, default=None, help="Default: <out_dir>/coco_summary.json")
 
     # Preprocessing (service-aligned)
     ap.add_argument("--grayscale", action="store_true", default=env_gray,
@@ -395,7 +432,7 @@ def main():
     model  = build_model(args.checkpoint, device=device, verbose=args.verbose)
 
     # Load JSON + build image list
-    gt_by_file, img_to_dataset, img_files = load_coco_annotations(
+    gt_by_file, img_to_dataset, img_files, path_to_imgid, resolved_cat_id, coco_gt = load_coco_annotations(
         args.coco_json, images_root=args.images_dir,
         category_name=args.coco_category, category_id=args.coco_category_id,
         verbose=args.verbose
@@ -450,6 +487,17 @@ def main():
     det_records = []  # for mAP/recall eval
     det_dump    = []  # raw detections dump for detections.json
     processed_paths = []
+    coco_results = []
+    inference_times = []
+
+    if resolved_cat_id is None:
+        cats = coco_gt.get("categories", [])
+        if len(cats) == 1 and "id" in cats[0]:
+            resolved_cat_id = int(cats[0]["id"])
+        elif args.coco_category_id is not None:
+            resolved_cat_id = int(args.coco_category_id)
+        else:
+            resolved_cat_id = 1
 
     N = len(img_files) if args.limit <= 0 else min(args.limit, len(img_files))
     if args.verbose:
@@ -477,7 +525,14 @@ def main():
         ten = F.normalize(ten, mean=norm_mean, std=norm_std).to(device)
 
         with torch.no_grad():
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            t0 = time.perf_counter()
             out = model([ten])[0]
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            t1 = time.perf_counter()
+            inference_times.append(float(t1 - t0))
 
         boxes  = out.get("boxes",  torch.empty(0, 4, device=device)).detach().to("cpu").numpy()
         scores = out.get("scores", torch.empty(0,    device=device)).detach().to("cpu").numpy()
@@ -557,6 +612,15 @@ def main():
                 "best_gt_idx": int(best_gt_idx),
             })
 
+            # Add COCO-format prediction for this detection.
+            x1, y1, x2, y2 = map(float, box)
+            coco_results.append({
+                "image_id": int(path_to_imgid.get(os.path.abspath(path), -1)),
+                "category_id": int(resolved_cat_id),
+                "bbox": [x1, y1, max(0.0, x2 - x1), max(0.0, y2 - y1)],
+                "score": float(sc),
+            })
+
         if not args.verbose:
             print(f"[{i}/{N}] {dset or 'unknown'}/{os.path.basename(path)}: saved {len(order)} crop(s)")
 
@@ -580,6 +644,37 @@ def main():
         "crops_saved": dict(totals),
     })
 
+    # Inference timing summary.
+    if inference_times:
+        arr = np.array(inference_times, dtype=np.float64)
+        metrics.update({
+            "inference_latency_mean_s": float(arr.mean()),
+            "inference_latency_p50_s": float(np.percentile(arr, 50)),
+            "inference_latency_p95_s": float(np.percentile(arr, 95)),
+            "inference_fps_mean": float(1.0 / arr.mean()) if arr.mean() > 0 else float("inf"),
+        })
+
+    # Optional COCO metrics summary.
+    coco_summary_path = args.coco_summary_json or os.path.join(args.out_dir, "coco_summary.json")
+    valid_coco_results = [r for r in coco_results if r.get("image_id", -1) >= 0]
+    coco_eval = coco_bbox_eval(
+        coco_gt,
+        valid_coco_results,
+        img_ids=[path_to_imgid[p] for p in processed_set if p in path_to_imgid],
+    )
+    if coco_eval is not None:
+        coco_metrics = {
+            "AP_50_95": float(coco_eval.stats[0]),
+            "AP_50": float(coco_eval.stats[1]),
+            "AP_75": float(coco_eval.stats[2]),
+            "AR_1": float(coco_eval.stats[6]),
+            "AR_10": float(coco_eval.stats[7]),
+            "AR_100": float(coco_eval.stats[8]),
+        }
+        metrics["coco_bbox"] = coco_metrics
+        with open(coco_summary_path, "w", encoding="utf-8") as f:
+            json.dump(coco_metrics, f, indent=2)
+
     # Save JSONs
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
@@ -590,6 +685,8 @@ def main():
     print(f"Saved: pass={totals['pass']}  fail={totals['fail']}  no_gt={totals['no_gt']}")
     print(f"[METRICS] wrote {metrics_path}")
     print(f"[DETS   ] wrote {detections_path}")
+    if coco_eval is not None:
+        print(f"[COCO   ] wrote {coco_summary_path}")
     print(json.dumps(metrics, indent=2))
 
 

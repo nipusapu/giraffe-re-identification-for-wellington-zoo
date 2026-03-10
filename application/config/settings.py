@@ -94,7 +94,7 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = 'config.urls'
 
-# Allow your Next.js origin(s). Use schemes (http/https) and include ports.
+# Allow Next.js origin(s). Use schemes (http/https) and include ports.
 
 CORS_ALLOWED_ORIGINS = env.list("DJANGO_CORS_ALLOWED_ORIGINS", default=[])
 #CORS_ALLOWED_ORIGIN_REGEXES = env.list("DJANGO_CORS_ALLOWED_ORIGIN_REGEXES", default=[])
@@ -232,16 +232,16 @@ REID_INDEX_DIM       = env.int("REID_INDEX_DIM", 128)
 REID_INDEX_METRIC    = env.str("REID_INDEX_METRIC", "euclidean")
 REID_FLIP_QUERY      = env.bool("REID_FLIP_QUERY", False)
 REID_IMG_WIDTH       = env.int("REID_IMG_WIDTH", 256)
-REID_MAX_KPTS        = env.int("REID_MAX_KPTS", 150)
+REID_MAX_KPTS        = env.int("REID_MAX_KPTS", 85)
 REID_USE_CLAHE       = env.bool("REID_USE_CLAHE", True)
-REID_TOPK_PER_DESC   = env.int("REID_TOPK_PER_DESC", 7)
+REID_TOPK_PER_DESC   = env.int("REID_TOPK_PER_DESC", 11)
 REID_ANNOY_SEARCH_K  = env.int("REID_ANNOY_SEARCH_K", None)
 REID_MASKS_ROOT      = env.str("REID_MASKS_ROOT", None)
 
 
 # --- new for reid2 ---
 # Used when REID_ANNOY_SEARCH_K == 0: search_k = n_items * REID_SEARCH_K_MULT
-REID_SEARCH_K_MULT        = env.float("REID_SEARCH_K_MULT",        default=20.0)
+REID_SEARCH_K_MULT        = env.float("REID_SEARCH_K_MULT",        default=32.0)
 
 # Cap matches counted per gallery image (prevents one photo dominating)
 REID_PER_IMAGE_MATCH_CAP  = env.int("REID_PER_IMAGE_MATCH_CAP",    default=30)
@@ -250,9 +250,9 @@ REID_PER_IMAGE_MATCH_CAP  = env.int("REID_PER_IMAGE_MATCH_CAP",    default=30)
 REID_USE_RANK_WEIGHT      = env.bool("REID_USE_RANK_WEIGHT",       default=True)
 
 # Balance IDs by their gallery size (score /= #images for that ID)
-REID_PER_ID_NORMALIZE     = env.bool("REID_PER_ID_NORMALIZE",      default=True)
+REID_PER_ID_NORMALIZE     = env.bool("REID_PER_ID_NORMALIZE",      default=False)
 
-# Optional: force engine selection in your Celery task ("" → auto, prefers reid2)
+# Optional: force engine selection in the Celery task ("" → auto, prefers reid2)
 REID_IMPLEMENTATION       = env.str("REID_IMPLEMENTATION",         default="")
 
 # Optional: force engine (otherwise reid2 is chosen when present)
