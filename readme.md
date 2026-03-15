@@ -1,5 +1,7 @@
 # Giraffe Re-identification for Wellington Zoo
 
+Code repository for paper *"Making Animal Re-Identification Accessible: A Web-Based Giraffe ID System for Zoos"*, authored by Nipuna Lakshitha Saputhanthrige Don, Mitchell Rogers, Junhong Zhao, Bing Xue and Mengjie Zhang: [https://www.mdpi.com/2078-2489/17/3/266](https://www.mdpi.com/2078-2489/17/3/266)
+
 Identifying giraffes by their spot patterns is vital for research, industry, and education, but many tools are expert-oriented and require training. Zoo visitors often have no simple way to identify an individual on site. Each giraffe has unique markings—spot patterns, horn shape, ear notches—that are easy to miss without guidance during a short visit.
 
 This project delivers a simple three-part solution:
@@ -26,6 +28,7 @@ The back end is lightweight and runs on a laptop or in the cloud. It’s budget-
     - [Try the algorithms from the CLI](#try-the-algorithms-from-the-cli)
   - [Configuration (.env)](#configuration-env)
   - [Swapping models](#swapping-models)
+  - [Citing this work](#citing-this-work)
 
 ---
 
@@ -36,7 +39,7 @@ The dataset used for this paper, including all ground-truth masks is available f
 ## What’s in this repo
 
 * **`application/`** – Django REST API + Celery pipeline + Next.js web UI
-* **`mobilent/`** – MobileNetV3 Faster R-CNN training & testing scripts
+* **`mobilenet/`** – MobileNetV3 Faster R-CNN training & testing scripts
 * **`sift/`** – SIFT/RootSIFT gallery index builder & query evaluator
 * **`svm/`** – HOG + Linear SVM trainer & sliding-window detector
 
@@ -66,7 +69,7 @@ User Upload -> Django API  -> Celery Pipeline -> Detector (MobileNetV3 FRCNN)
 | Path           | Purpose                            | Key files                                                                                   |
 | -------------- | ---------------------------------- | ------------------------------------------------------------------------------------------- |
 | `application/` | Web application (API + tasks + UI) | `api/`, `reid/`, `config/`, `ui/`, `Dockerfile.api`, `Dockerfile.web`, `docker-compose.yml` |
-| `mobilent/`    | Detector training & evaluation     | `trainscript.py` (train), `testscript.py` (service-style test)                               |
+| `mobilenet/`    | Detector training & evaluation     | `trainscript.py` (train), `testscript.py` (service-style test)                               |
 | `sift/`        | SIFT/RootSIFT Re-ID                | `build_sift_index.py` (build Annoy), `query_sift_reid.py` (evaluate)                        |
 | `svm/`         | Baseline HOG + SVM                 | `trainscript.py` (train), `testscript.py` (detect + AP eval)                                |
 
@@ -180,14 +183,14 @@ python sift/query_sift_reid.py eval \
 
 ```bash
 # Train
-python mobilent/trainscript.py \
+python mobilenet/trainscript.py \
   --images_dir dataset/images \
   --train_json dataset/annotations_train.json \
   --val_json   dataset/annotations_val.json \
   --output_dir checkpoints --epochs 50 --batch_size 2 --lr 1e-4
 
 # Test (service-style top-1)
-python mobilent/testscript.py \
+python mobilenet/testscript.py \
   --images_dir dataset/images \
   --coco_json  dataset/annotations_eval.json \
   --checkpoint checkpoints/fasterrcnn_mbv3_fpn_latest.pth \
@@ -264,3 +267,20 @@ Key settings you’ll likely touch:
 
 ---
 
+## Citing this work
+
+```bib
+@Article{info17030266,
+AUTHOR = {Saputhanthrige Don, Nipuna Lakshitha and Rogers, Mitchell and Zhao, Junhong and Xue, Bing and Zhang, Mengjie},
+TITLE = {Making Animal Re-Identification Accessible: A Web-Based Giraffe ID System for Zoos},
+JOURNAL = {Information},
+VOLUME = {17},
+YEAR = {2026},
+NUMBER = {3},
+ARTICLE-NUMBER = {266},
+URL = {https://www.mdpi.com/2078-2489/17/3/266},
+ISSN = {2078-2489},
+DOI = {10.3390/info17030266}
+}
+
+```
